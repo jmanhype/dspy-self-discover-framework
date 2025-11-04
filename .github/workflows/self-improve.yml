@@ -1,0 +1,12 @@
+name: AI Self-Improvement
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Run daily at midnight UTC
+    - cron: '0 0 * * *'
+
+jobs:
+  self-improve:
+    uses: jmanhype/.github/.github/workflows/ai-self-improve.yml@main
+    secrets: inherit
