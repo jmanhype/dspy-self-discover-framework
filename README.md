@@ -34,6 +34,8 @@ curl -X 'POST' \
 
 ### Executing Arbitrary Code
 
+⚠️ **SECURITY WARNING**: The `/execute-code/` endpoint executes arbitrary Python code. This should **NEVER** be exposed on a public network or production environment without proper authentication, authorization, and sandboxing. Use only in trusted, isolated development environments.
+
 ```bash
 curl -X 'POST' \
   'http://0.0.0.0:8008/execute-code/' \
@@ -67,6 +69,22 @@ Start the FastAPI server using Uvicorn:
 ```bash
 uvicorn self_discover_dspy_api:app --host 0.0.0.0 --port 8008 --reload
 ```
+
+## Security Considerations
+
+⚠️ **IMPORTANT**: This application includes endpoints that execute arbitrary code. Please be aware of the following security considerations:
+
+1. **Code Execution Endpoints**: The `/execute-code/` and `/generate-and-execute/` endpoints execute Python code dynamically. These endpoints:
+   - Should **NEVER** be exposed to the public internet
+   - Must only be used in isolated, trusted development environments
+   - Require proper authentication and authorization in any multi-user scenario
+   - Should be disabled or protected in production deployments
+
+2. **API Key Security**: Ensure the `GROQ_API_KEY` environment variable is properly secured and never committed to version control.
+
+3. **Input Validation**: While the application validates request schemas, additional input sanitization may be needed for production use.
+
+4. **Network Security**: Always run this application behind a firewall or VPN when needed.
 
 ## Contributing
 
