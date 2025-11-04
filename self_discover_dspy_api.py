@@ -1,15 +1,13 @@
-from fastapi import FastAPI
-from pydantic import BaseModel
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
 import uvicorn
 import dspy
 from pathlib import Path
 import json
-from groq import Groq as GroqClient  # Ensure this matches your actual Groq client import
+from groq import Groq as GroqClient
 from dsp import LM
 import os
 from interpreter import interpreter as oi
-from fastapi import HTTPException
-from pydantic import BaseModel, Field
 from typing import List, Optional
 
 class ReasoningStep(BaseModel):
@@ -27,7 +25,7 @@ class ReasoningOutput(BaseModel):
 
 class TaskRequest(BaseModel):
     description: str
-    task_type: str  # Newly added attribute
+    task_type: str
 
 class GenerateCodeModule(dspy.Module):
     def __init__(self):
@@ -82,29 +80,38 @@ class Groq(LM):
 class CodeExecutionRequest(BaseModel):
     code: str
 
-class TaskRequest(BaseModel):
-    description: str
-    # Additional fields as necessary
 
 app = FastAPI()
 
 # Global variable for Groq model
 groq_model = None
 
-def configure_dspy():
+def configure_dspy() -> None:
+    """Configure DSPy with Groq LLM model."""
     global groq_model
     groq_model = Groq(model="mixtral-8x7b-32768")
     dspy.settings.configure(lm=groq_model)
 
 # Load and prepare reasoning modules
-def load_and_prepare_reasoning_modules():
+def load_and_prepare_reasoning_modules() -> str:
+    """Load reasoning modules from JSON file and format as text.
+
+    Raises:
+        FileNotFoundError: If reasoning_modules.json is not found
+        json.JSONDecodeError: If JSON file is invalid
+    """
     cwd = Path.cwd()
     fp_reasoning_modules_json = cwd / "./reasoning_modules.json"
-    with open(fp_reasoning_modules_json, "r") as file:
-        data = json.load(file)
-    reasoning_modules = data.get("reasoning_modules", [])
-    reasoning_modules_text = ", ".join([f'({module["type"]}: {module["description"]})' for module in reasoning_modules])
-    return reasoning_modules_text
+    try:
+        with open(fp_reasoning_modules_json, "r") as file:
+            data = json.load(file)
+        reasoning_modules = data.get("reasoning_modules", [])
+        reasoning_modules_text = ", ".join([f'({module["type"]}: {module["description"]})' for module in reasoning_modules])
+        return reasoning_modules_text
+    except FileNotFoundError:
+        raise FileNotFoundError(f"Reasoning modules file not found: {fp_reasoning_modules_json}")
+    except json.JSONDecodeError as e:
+        raise json.JSONDecodeError(f"Invalid JSON in reasoning modules file: {e.msg}", e.doc, e.pos)
 
 # Your DSPy Module class definitions...
 class SelectReasoningModules(dspy.Signature):
@@ -246,38 +253,68 @@ def startup_event():
     # Load reasoning modules if they are to be used application-wide
 
 # Example function to load reasoning modules based on task type
-def load_reasoning_modules_for_task(task_type: str):
+def load_reasoning_modules_for_task(task_type: str) -> str:
+    """Load reasoning modules based on task type from corresponding JSON file.
+
+    Args:
+        task_type: The type of task (e.g., 'math', 'nlp', 'science', 'programming')
+
+    Returns:
+        Formatted string of reasoning modules
+
+    Raises:
+        FileNotFoundError: If reasoning modules file is not found
+        json.JSONDecodeError: If JSON file is invalid
+    """
     # Define paths or logic to select the correct reasoning modules JSON
     reasoning_module_paths = {
         "math": "./reasoning_modules_math.json",
         "nlp": "./reasoning_modules_nlp.json",
         # Add more task types and corresponding module files as needed
     }
-    json_file_path = reasoning_module_paths.get(task_type, "./default_reasoning_modules.json")
-    with open(json_file_path, "r") as file:
-        data = json.load(file)
-    reasoning_modules = data.get("reasoning_modules", [])
-    reasoning_modules_text = ", ".join([f'({module["type"]}: {module["description"]})' for module in reasoning_modules])
-    return reasoning_modules_text
-
-# Update the TaskRequest model to include a task_type field
-class TaskRequest(BaseModel):
-    description: str
-    task_type: str  # Added field to specify the task type
+    json_file_path = reasoning_module_paths.get(task_type, "./reasoning_modules.json")
+    try:
+        with open(json_file_path, "r") as file:
+            data = json.load(file)
+        reasoning_modules = data.get("reasoning_modules", [])
+        reasoning_modules_text = ", ".join([f'({module["type"]}: {module["description"]})' for module in reasoning_modules])
+        return reasoning_modules_text
+    except FileNotFoundError:
+        raise FileNotFoundError(f"Reasoning modules file not found for task type '{task_type}': {json_file_path}")
+    except json.JSONDecodeError as e:
+        raise json.JSONDecodeError(f"Invalid JSON in file {json_file_path}: {e.msg}", e.doc, e.pos)
 
 @app.post("/solve-task/")
 async def solve_task(request: TaskRequest):
-    # Dynamically load reasoning modules based on the specified task type
-    reasoning_modules_text = load_reasoning_modules_for_task(request.task_type)
+    """Solve a task using the Self-Discover reasoning framework.
 
-    # Initialize the SelfDiscover module with the dynamically loaded reasoning modules
-    self_discover = SelfDiscover(reasoning_modules=reasoning_modules_text)
+    Args:
+        request: TaskRequest containing task description and type
 
-    # Process the task using the SelfDiscover module
-    prediction = self_discover.forward(task_description=request.description)
-    
-    # Return the prediction or solution
-    return {"solution": prediction.solution}
+    Returns:
+        Dictionary with solution field
+
+    Raises:
+        HTTPException: If file loading or processing fails
+    """
+    try:
+        # Dynamically load reasoning modules based on the specified task type
+        reasoning_modules_text = load_reasoning_modules_for_task(request.task_type)
+
+        # Initialize the SelfDiscover module with the dynamically loaded reasoning modules
+        self_discover = SelfDiscover(reasoning_modules=reasoning_modules_text)
+
+        # Process the task using the SelfDiscover module
+        prediction = self_discover.forward(task_description=request.description)
+
+        # Return the prediction or solution
+        return {"solution": prediction.solution}
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=500, detail=f"Invalid JSON in reasoning modules: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing task: {str(e)}")
 
 @app.post("/execute-code/")
 async def execute_code(request: CodeExecutionRequest):
@@ -290,39 +327,59 @@ async def execute_code(request: CodeExecutionRequest):
 
 @app.post("/generate-and-execute/")
 async def generate_and_execute(request: TaskRequest):
+    """Generate code from task description and execute it.
+
+    Args:
+        request: TaskRequest containing task description and type
+
+    Returns:
+        Dictionary with execution result
+
+    Raises:
+        HTTPException: If code generation or execution fails
+    """
     print(f"generate-and-execute called with description: {request.description}, task_type: {request.task_type}")
 
-    # Load reasoning modules based on task type.
-    reasoning_modules_text = load_reasoning_modules_for_task(request.task_type)
-    print(f"Loaded reasoning modules: {reasoning_modules_text}")
+    try:
+        # Load reasoning modules based on task type.
+        reasoning_modules_text = load_reasoning_modules_for_task(request.task_type)
+        print(f"Loaded reasoning modules: {reasoning_modules_text}")
 
-    # Use the SelfDiscover module to process the task.
-    self_discover = SelfDiscover(reasoning_modules=reasoning_modules_text)
-    prediction = self_discover.forward(task_description=request.description)
-    print(f"Prediction from SelfDiscover: {prediction}")
+        # Use the SelfDiscover module to process the task.
+        self_discover = SelfDiscover(reasoning_modules=reasoning_modules_text)
+        prediction = self_discover.forward(task_description=request.description)
+        print(f"Prediction from SelfDiscover: {prediction}")
 
-    # Here, you'd need to extract the reasoning structure from the prediction.
-    # The following is a placeholder - you'll need to adjust it based on your actual data structure:
-    if hasattr(prediction, 'solution') and isinstance(prediction.solution, ReasoningStructure):
-        reasoning_structure = prediction.solution
-        print(f"Extracted reasoning structure: {reasoning_structure}")
+        # Here, you'd need to extract the reasoning structure from the prediction.
+        # The following is a placeholder - you'll need to adjust it based on your actual data structure:
+        if hasattr(prediction, 'solution') and isinstance(prediction.solution, ReasoningStructure):
+            reasoning_structure = prediction.solution
+            print(f"Extracted reasoning structure: {reasoning_structure}")
 
-        # Generate code using the GenerateCodeModule.
-        generate_code_module = GenerateCodeModule()
-        generated_code = generate_code_module.forward(reasoning_structure)
-        print(f"Generated code: {generated_code}")
+            # Generate code using the GenerateCodeModule.
+            generate_code_module = GenerateCodeModule()
+            generated_code = generate_code_module.forward(reasoning_structure)
+            print(f"Generated code: {generated_code}")
 
-        try:
-            execution_result = oi.chat(f"```python\n{generated_code}\n```", display=False)
-            print(f"Execution result: {execution_result}")
-            return {"result": execution_result}
-        except Exception as e:
-            print(f"Error executing code: {e}")
-            raise HTTPException(status_code=500, detail=f"Failed to generate or execute code: {e}")
-    else:
-        error_msg = "Failed to extract reasoning structure from prediction."
-        print(error_msg)
-        raise HTTPException(status_code=500, detail=error_msg)
+            try:
+                execution_result = oi.chat(f"```python\n{generated_code}\n```", display=False)
+                print(f"Execution result: {execution_result}")
+                return {"result": execution_result}
+            except Exception as e:
+                print(f"Error executing code: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to execute generated code: {str(e)}")
+        else:
+            error_msg = "Failed to extract reasoning structure from prediction."
+            print(error_msg)
+            raise HTTPException(status_code=500, detail=error_msg)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=500, detail=f"Invalid JSON in reasoning modules: {str(e)}")
+    except HTTPException:
+        raise  # Re-raise HTTP exceptions
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error in generate-and-execute: {str(e)}")
 
 
 
